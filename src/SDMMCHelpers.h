@@ -3,6 +3,10 @@
 
 #include <Analyzer.h>
 
+/* FIXME: block length is fixed to 512 bytes (CMD16/SD register reads
+ * with other sizes are not taken into account) */
+#define DATA_BLOCK_BYTES 512
+
 enum MMCResponseType {
 	MMC_RSP_NONE,
 	MMC_RSP_R1,

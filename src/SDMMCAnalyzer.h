@@ -29,7 +29,10 @@ protected:
 	void ReadCommandBit(CommandReadState *state, DataReadState *dataState,
 			struct Frame *respFrame);
 	void ReadDataBit(DataReadState *state, struct Frame *dataFrame);
+	U32 BusWidthLines();
 	U32 DataBlockClocks();
+	U32 DataBytesPerFrame();
+	U64 DataLinesBits();
 	void ShiftCrcBit(U64 *crcs, int lane, AnalyzerChannelData *line);
 
 protected:

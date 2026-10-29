@@ -404,39 +404,53 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 			}
 			return;
 		case DATA_DATA:
-			 /* Start frames if necessary*/
-			if (mSettings.mBusWidth == BUS_WIDTH_8 ||
-					(mSettings.mBusWidth == BUS_WIDTH_4 && state->data_cnt % 2 == 0) ||
-					(mSettings.mBusWidth == BUS_WIDTH_1 && state->data_cnt % 8 == 0)) {
-				frame->mType = SDMMCAnalyzerResults::FRAMETYPE_DATA_CONTENTS;
-				frame->mStartingSampleInclusive = mClock->GetSampleNumber();
-				frame->mData1 = 0;
-				frame->mData2 = 0;
-				frame->mFlags = 0;
-			}
-			/* Store data */
-			if (mSettings.mBusWidth == BUS_WIDTH_8) {
-				frame->mData1 = (frame->mData1 << 1) | mData7->GetBitState();
-				frame->mData1 = (frame->mData1 << 1) | mData6->GetBitState();
-				frame->mData1 = (frame->mData1 << 1) | mData5->GetBitState();
-				frame->mData1 = (frame->mData1 << 1) | mData4->GetBitState();
-			}
-			if (mSettings.mBusWidth == BUS_WIDTH_8 ||
-					mSettings.mBusWidth == BUS_WIDTH_4) {
-				frame->mData1 = (frame->mData1 << 1) | mData3->GetBitState();
-				frame->mData1 = (frame->mData1 << 1) | mData2->GetBitState();
-				frame->mData1 = (frame->mData1 << 1) | mData1->GetBitState();
-			}
-			frame->mData1 = (frame->mData1 << 1) | mData0->GetBitState();
-			/* Commit results if necessary */
-			if (mSettings.mBusWidth == BUS_WIDTH_8 ||
-					(mSettings.mBusWidth == BUS_WIDTH_4 && state->data_cnt % 2 == 1) ||
-					(mSettings.mBusWidth == BUS_WIDTH_1 && state->data_cnt % 8 == 7)
-					) {
-				frame->mEndingSampleInclusive = mClock->GetSampleNumber();
-				// committed once per block (DATA_CRC) - committing every byte
-				// is very expensive at high bus rates
-				mResults->AddFrame(*frame);
+		{
+			if (mSettings.mDataMode != DATA_MODE_NONE) {
+				const U32 lines = BusWidthLines();
+				const U32 clocks_per_byte = 8 / lines;
+				const U32 bytes_per_frame = DataBytesPerFrame();
+				const U32 clocks_per_frame = clocks_per_byte * bytes_per_frame;
+				const U32 frame_clock = state->data_cnt % clocks_per_frame;
+				const U32 byte_in_frame = frame_clock / clocks_per_byte;
+
+				/* Start frames if necessary */
+				if (frame_clock == 0) {
+					switch (mSettings.mDataMode) {
+						case DATA_MODE_PACKED:
+							frame->mType = SDMMCAnalyzerResults::FRAMETYPE_DATA_PACKED;
+							break;
+						case DATA_MODE_BLOCK:
+							frame->mType = SDMMCAnalyzerResults::FRAMETYPE_DATA_BLOCK;
+							break;
+						default:
+							frame->mType = SDMMCAnalyzerResults::FRAMETYPE_DATA_CONTENTS;
+							break;
+					}
+					frame->mStartingSampleInclusive = mClock->GetSampleNumber();
+					frame->mData1 = 0;
+					frame->mData2 = 0;
+					frame->mFlags = 0;
+				}
+				/* Store data: bytes 0-7 of a frame go to mData1, 8-15 to
+				 * mData2 (packed mode only), first byte in the MSBs */
+				U64 *target = NULL;
+				if (byte_in_frame < 8)
+					target = &frame->mData1;
+				else if (mSettings.mDataMode == DATA_MODE_PACKED)
+					target = &frame->mData2;
+				if (target != NULL)
+					*target = (*target << lines) | DataLinesBits();
+				/* Add frame at its last clock */
+				if (frame_clock == clocks_per_frame - 1) {
+					frame->mEndingSampleInclusive = mClock->GetSampleNumber();
+					if (mSettings.mDataMode == DATA_MODE_PACKED)
+						frame->mFlags = bytes_per_frame;
+					else if (mSettings.mDataMode == DATA_MODE_BLOCK)
+						frame->mData2 = bytes_per_frame;
+					// committed once per block (DATA_CRC) - committing every
+					// frame is very expensive at high bus rates
+					mResults->AddFrame(*frame);
+				}
 			}
 			/* last data bit only - change state */
 			if (state->data_cnt == DataBlockClocks() - 1) {
@@ -444,6 +458,7 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 			}
 			state->data_cnt++;
 			return;
+		}
 		case DATA_CRC:
 			if (state->crc_cnt == 0) {
 				frame->mType = SDMMCAnalyzerResults::FRAMETYPE_DATA_CRC;
@@ -563,15 +578,43 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 			return;
 	}
 }
-U32 SDMMCAnalyzer::DataBlockClocks() {
-	/* FIXME: block length is fixed to 512 bytes (CMD16/SD register reads
-	 * with other sizes are not taken into account) */
-	const U32 block_bits = 512 * 8;
+U32 SDMMCAnalyzer::BusWidthLines() {
 	switch (mSettings.mBusWidth) {
-		case BUS_WIDTH_8: return block_bits / 8;
-		case BUS_WIDTH_4: return block_bits / 4;
-		default: return block_bits;
+		case BUS_WIDTH_8: return 8;
+		case BUS_WIDTH_4: return 4;
+		default: return 1;
 	}
+}
+
+U32 SDMMCAnalyzer::DataBlockClocks() {
+	return DATA_BLOCK_BYTES * 8 / BusWidthLines();
+}
+
+U32 SDMMCAnalyzer::DataBytesPerFrame() {
+	switch (mSettings.mDataMode) {
+		case DATA_MODE_PACKED: return 16;
+		case DATA_MODE_BLOCK: return DATA_BLOCK_BYTES;
+		default: return 1;
+	}
+}
+
+U64 SDMMCAnalyzer::DataLinesBits() {
+	/* bits sent on one clock, highest data line first */
+	U64 bits = 0;
+	if (mSettings.mBusWidth == BUS_WIDTH_8) {
+		bits = (bits << 1) | mData7->GetBitState();
+		bits = (bits << 1) | mData6->GetBitState();
+		bits = (bits << 1) | mData5->GetBitState();
+		bits = (bits << 1) | mData4->GetBitState();
+	}
+	if (mSettings.mBusWidth == BUS_WIDTH_8 ||
+			mSettings.mBusWidth == BUS_WIDTH_4) {
+		bits = (bits << 1) | mData3->GetBitState();
+		bits = (bits << 1) | mData2->GetBitState();
+		bits = (bits << 1) | mData1->GetBitState();
+	}
+	bits = (bits << 1) | mData0->GetBitState();
+	return bits;
 }
 
 void SDMMCAnalyzer::ShiftCrcBit(U64 *crcs, int lane, AnalyzerChannelData *line) {
