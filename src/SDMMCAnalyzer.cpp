@@ -63,6 +63,7 @@ void SDMMCAnalyzer::WorkerThread()
 			MMC_RSP_NONE, 0, 0, 0, 0, 0, 0};
 		DataReadState dataState = {DATA_NOTSTARTED, 0, 0, 0, 0, false};
 
+		U32 clocks = 0;
 		while (cmdState.phase != CMD_ERROR && dataState.phase != DATA_ERROR &&
 				cmdState.phase != CMD_INTERRUPT &&
 				!(cmdState.phase == CMD_END &&
@@ -72,6 +73,12 @@ void SDMMCAnalyzer::WorkerThread()
 			ReadCommandBit(&cmdState, &dataState, &respFrame);
 			ReadDataBit(&dataState, &dataFrame);
 			AdvanceToNextClock();
+			// long multi-block transfers stay in this loop: keep the thread
+			// responsive so Logic can stop/restart the analyzer
+			if ((++clocks & 0xFFF) == 0) {
+				ReportProgress(mClock->GetSampleNumber());
+				CheckIfThreadShouldExit();
+			}
 		}
 		mResults->CommitResults();
 	}
@@ -116,20 +123,25 @@ void SDMMCAnalyzer::AdvanceToNextClock()
 		mClock->AdvanceToNextEdge();
 	} while (mClock->GetBitState() != search);
 
-	mCommand->AdvanceToAbsPosition(mClock->GetSampleNumber());
+	// Sample CMD/DAT one sample before the clock edge: in high speed mode
+	// outputs change only a few ns after the edge, so sampling exactly at the
+	// edge sample can pick up the next bit. Setup time guarantees the lines
+	// are stable just before the edge in all modes.
+	U64 sample = mClock->GetSampleNumber() - 1;
+	mCommand->AdvanceToAbsPosition(sample);
 	if (mSettings.mBusWidth != BUS_WIDTH_0)
-		mData0->AdvanceToAbsPosition(mClock->GetSampleNumber());
+		mData0->AdvanceToAbsPosition(sample);
 	if (mSettings.mBusWidth == BUS_WIDTH_4 ||
 			mSettings.mBusWidth == BUS_WIDTH_8) {
-		mData1->AdvanceToAbsPosition(mClock->GetSampleNumber());
-		mData2->AdvanceToAbsPosition(mClock->GetSampleNumber());
-		mData3->AdvanceToAbsPosition(mClock->GetSampleNumber());
+		mData1->AdvanceToAbsPosition(sample);
+		mData2->AdvanceToAbsPosition(sample);
+		mData3->AdvanceToAbsPosition(sample);
 	}
 	if (mSettings.mBusWidth == BUS_WIDTH_8) {
-		mData4->AdvanceToAbsPosition(mClock->GetSampleNumber());
-		mData5->AdvanceToAbsPosition(mClock->GetSampleNumber());
-		mData6->AdvanceToAbsPosition(mClock->GetSampleNumber());
-		mData7->AdvanceToAbsPosition(mClock->GetSampleNumber());
+		mData4->AdvanceToAbsPosition(sample);
+		mData5->AdvanceToAbsPosition(sample);
+		mData6->AdvanceToAbsPosition(sample);
+		mData7->AdvanceToAbsPosition(sample);
 	}
 }
 
@@ -285,8 +297,8 @@ void SDMMCAnalyzer::ReadCommandBit(CommandReadState *state, DataReadState
 				frame->mData2 = (frame->mData2 << 1) | mCommand->GetBitState();
 				/* bits 64 to 127 */
 			}
-			/* last data bit only */
-			if (state->resp_data_cnt == state->resp_data_bits) {
+			/* last data bit only (resp_data_cnt counts from 0) */
+			if (state->resp_data_cnt == state->resp_data_bits - 1) {
 				// observed: no data block following CMD8 R1 response,
 				// EXCEPTION_EVENT bit (6), RESERVED (4) and APP-specific (2)
 				// bits set - why?
@@ -302,7 +314,11 @@ void SDMMCAnalyzer::ReadCommandBit(CommandReadState *state, DataReadState
 					state->phase = RESP_CRC;
 					state->resp_crc_cnt = 0;
 				} else {
-					state->phase = RESP_STOP;
+					// R2: the 128 bits read are CID/CSD[127:1] plus the end
+					// bit (CID/CSD bit 0, always 1) - response is complete
+					mResults->AddMarker(mClock->GetSampleNumber(),
+							AnalyzerResults::Stop, mSettings.mCommandChannel);
+					state->phase = CMD_END;
 				}
 			}
 			state->resp_data_cnt++;
@@ -418,12 +434,12 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 					(mSettings.mBusWidth == BUS_WIDTH_1 && state->data_cnt % 8 == 7)
 					) {
 				frame->mEndingSampleInclusive = mClock->GetSampleNumber();
+				// committed once per block (DATA_CRC) - committing every byte
+				// is very expensive at high bus rates
 				mResults->AddFrame(*frame);
-				mResults->CommitResults();
 			}
 			/* last data bit only - change state */
-			if (state->data_cnt == 1023) {
-				/* FIXME do not used fixed block width */
+			if (state->data_cnt == DataBlockClocks() - 1) {
 				state->phase = DATA_CRC;
 			}
 			state->data_cnt++;
@@ -436,18 +452,19 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 				frame->mData2 = 0;
 				frame->mFlags = 0;
 			}
-			frame->mData1 <<= 1;
-			frame->mData1 |= (mData0->GetBitState());
+			/* one CRC16 per data line: D0-D3 in mData1, D4-D7 in mData2,
+			 * 16 bits per line (D0/D4 in bits 15:0) */
+			ShiftCrcBit(&frame->mData1, 0, mData0);
 			if (mSettings.mBusWidth != BUS_WIDTH_1) { /* BusWidth=4 or 8 */
-				frame->mData1 |= (mData1->GetBitState() << 16);
-				frame->mData1 |= (mData2->GetBitState() << 32);
-				frame->mData1 |= (mData3->GetBitState() << 48);
+				ShiftCrcBit(&frame->mData1, 1, mData1);
+				ShiftCrcBit(&frame->mData1, 2, mData2);
+				ShiftCrcBit(&frame->mData1, 3, mData3);
 			}
 			if (mSettings.mBusWidth == BUS_WIDTH_8) { /* BusWidth=8 */
-				frame->mData2 |= (mData4->GetBitState() << 16);
-				frame->mData2 |= (mData5->GetBitState() << 16);
-				frame->mData2 |= (mData6->GetBitState() << 32);
-				frame->mData2 |= (mData7->GetBitState() << 48);
+				ShiftCrcBit(&frame->mData2, 0, mData4);
+				ShiftCrcBit(&frame->mData2, 1, mData5);
+				ShiftCrcBit(&frame->mData2, 2, mData6);
+				ShiftCrcBit(&frame->mData2, 3, mData7);
 			}
 			if (state->crc_cnt == 15) {
 				frame->mEndingSampleInclusive = mClock->GetSampleNumber();
@@ -458,10 +475,10 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 			state->crc_cnt++;
 			return;
 		case DATA_STOP:
-			if (	/* BusWidth=4 or 8 */
+			if (mData0->GetBitState() == BIT_LOW ||
+					/* BusWidth=4 or 8 */
 					mSettings.mBusWidth != BUS_WIDTH_1 &&
-					(mData0->GetBitState() == BIT_LOW ||
-					 mData1->GetBitState() == BIT_LOW ||
+					(mData1->GetBitState() == BIT_LOW ||
 					 mData2->GetBitState() == BIT_LOW ||
 					 mData3->GetBitState() == BIT_LOW) ||
 					/* BusWidth=8 */
@@ -492,6 +509,7 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 					}
 				}
 			}
+			return;
 		case DATA_CHECKCRC_INIT:
 			if (mData0->GetBitState() == BIT_LOW) {
 				state->phase = DATA_CHECKCRC_CRC;
@@ -529,6 +547,9 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 			return;
 		case DATA_BUSY_END:
 			if (state->hasSeveralDataBlocks) {
+				state->data_cnt = 0;
+				state->crc_cnt = 0;
+				state->checkcrc_cnt = 0;
 				state->phase = DATA_INIT;
 			} else {
 				state->phase = DATA_END;
@@ -542,6 +563,24 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 			return;
 	}
 }
+U32 SDMMCAnalyzer::DataBlockClocks() {
+	/* FIXME: block length is fixed to 512 bytes (CMD16/SD register reads
+	 * with other sizes are not taken into account) */
+	const U32 block_bits = 512 * 8;
+	switch (mSettings.mBusWidth) {
+		case BUS_WIDTH_8: return block_bits / 8;
+		case BUS_WIDTH_4: return block_bits / 4;
+		default: return block_bits;
+	}
+}
+
+void SDMMCAnalyzer::ShiftCrcBit(U64 *crcs, int lane, AnalyzerChannelData *line) {
+	const int shift = lane * 16;
+	U64 crc = (*crcs >> shift) & 0xFFFF;
+	crc = ((crc << 1) | (line->GetBitState() == BIT_HIGH ? 1 : 0)) & 0xFFFF;
+	*crcs = (*crcs & ~(0xFFFFull << shift)) | (crc << shift);
+}
+
 /*
  * loader hooks
  */

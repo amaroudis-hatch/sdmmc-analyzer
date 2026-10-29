@@ -235,7 +235,7 @@ case FRAMETYPE_COMMAND:
 				AnalyzerHelpers::GetNumberString(forced, display_base, 4, str_forced, sizeof(str_forced));
 				AnalyzerHelpers::GetNumberString(num_blocks, display_base, 4, str_num_blocks, sizeof(str_num_blocks));
 
-				sprintf(str_buf, ", arg=%s, rwritereq=%s, tagreq=%s, ctx_id=%s, forced=%s, num_blocks=%s", str_arg, str_rwritereq, str_tagreq, str_ctx_id, str_forced, num_blocks);
+				sprintf(str_buf, ", arg=%s, rwritereq=%s, tagreq=%s, ctx_id=%s, forced=%s, num_blocks=%s", str_arg, str_rwritereq, str_tagreq, str_ctx_id, str_forced, str_num_blocks);
 			}
 			break;}
 		case 38: //ERASE
@@ -521,10 +521,13 @@ case FRAMETYPE_COMMAND:
 		if (channel != mSettings->mDataChannel0)
 			break;
 
-		char str_crc[8];
-		AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, 8,
+		// one CRC16 per data line, D0 in the low 16 bits
+		int crc_bits = mSettings->mBusWidth == BUS_WIDTH_1 ? 16 : 64;
+		char str_crc[24];
+		AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, crc_bits,
 				str_crc, sizeof(str_crc));
-		AddResultString(str_crc);
+		AddResultString("CRC");
+		AddResultString("CRC=", str_crc);
 		break;
 	}
 

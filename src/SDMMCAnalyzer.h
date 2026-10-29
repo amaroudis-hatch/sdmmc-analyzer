@@ -29,6 +29,8 @@ protected:
 	void ReadCommandBit(CommandReadState *state, DataReadState *dataState,
 			struct Frame *respFrame);
 	void ReadDataBit(DataReadState *state, struct Frame *dataFrame);
+	U32 DataBlockClocks();
+	void ShiftCrcBit(U64 *crcs, int lane, AnalyzerChannelData *line);
 
 protected:
 	SDMMCAnalyzerSettings mSettings;
