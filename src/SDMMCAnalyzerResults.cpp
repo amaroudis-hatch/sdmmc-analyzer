@@ -17,67 +17,17 @@ SDMMCAnalyzerResults::~SDMMCAnalyzerResults()
 {
 }
 
-static const char* cmd_abbrev_from_number(unsigned int cmd_number)
+static const char* command_prefix(const Frame &frame)
 {
-	if (cmd_number >= 43 && cmd_number <= 47) return "[reserved]";
-	switch (cmd_number) {
-		case 0: return "GO_IDLE_STATE";
-		case 1: return "[reserved]";
-		case 2: return "ALL_SEND_CID";
-		case 3: return "SEND_RELATIVE_ADDR";
-		case 4: return "SET_DSR";
-		case 5: return "[reserved for SDIO]";
-		case 6: return "SWITCH_FUNC";
-		case 7: return "SELECT/DESELECT_CARD";
-		case 8: return "SEND_EXT_CSD";
-		case 9: return "SEND_CSD";
-		case 10: return "SEND_CID";
-		case 11: return "VOLTAGE_SWITCH";
-		case 12: return "STOP_TRANSMISSION";
-		case 13: return "SEND_STATUS";
-		case 14: return "[reserved]";
-		case 15: return "GO_INACTIVE_STATE";
-		case 16: return "SET_BLOCKLEN";
-		case 17: return "READ_SINGLE_BLOCK";
-		case 18: return "READ_MULTIPLE_BLOCK";
-		case 19: return "SEND_TUNING_BLOCK";
-		case 20: return "SPEED_CLASS_CONTROL";
-		case 21: return "[reserved for DPS]";
-		case 22: return "[reserved]";
-		case 23: return "SET_BLOCK_COUNT";
-		case 24: return "WRITE_BLOCK";
-		case 25: return "WRITE_MULTIPLE_BLOCK";
-		case 26: return "[reserved for manufacturer]";
-		case 27: return "PROGRAM_CSD";
-		case 28: return "SWT_WRITE_PROT";
-		case 29: return "CLR_WRITE_PROT";
-		case 30: return "SEND_WRITE_PROT";
-		case 31: return "[reserved]";
-		case 32: return "ERASE_WR_BLK_START";
-		case 33: return "ERASE_WR_BLK_END";
-		case 34: return "[function dependent]";
-		case 35: return "[function dependent]";
-		case 36: return "[function dependent]";
-		case 37: return "[function dependent]";
-		case 38: return "ERASE";
-		case 39: return "[reserved]";
-		case 40: return "[defined by DPS]";
-		case 41: return "[reserved]";
-		case 42: return "LOCK_UNLOCK";
-		case 48: return "READ_EXTR_SINGLE";
-		case 49: return "WRITE_EXTR_SINGLE";
-		case 50: return "[function dependent]";
-		case 51: return "[reserved]";
-		case 52: return "[sdio]";
-		case 53: return "[sdio]";
-		case 54: return "[sdio]";
-		case 55: return "APP_CMD";
-		case 56: return "GEN_CMD";
-		case 57: return "[function dependent]";
-		case 58: return "READ_EXTR_MULTI";
-		case 59: return "WRITE_EXTR_MULTI";
-		default: return "[invalid command number]";
-	}
+	return (frame.mFlags & SDMMCAnalyzerResults::FLAG_APP_CMD) ? "ACMD" : "CMD";
+}
+
+static const char* command_name(SDMMCAnalyzerSettings *settings, const Frame &frame)
+{
+	if (settings->mProtocol == PROTOCOL_SD)
+		return SDMMCHelpers::SDCommandName(frame.mData1,
+				(frame.mFlags & SDMMCAnalyzerResults::FLAG_APP_CMD) != 0);
+	return SDMMCHelpers::MMCCommandDescription(frame.mData1, frame.mData2);
 }
 
 void SDMMCAnalyzerResults::GenerateBubbleText(U64 frame_index, Channel& channel, DisplayBase display_base)
@@ -107,13 +57,16 @@ case FRAMETYPE_COMMAND:
 		AnalyzerHelpers::GetNumberString(frame.mData1, Decimal, 6, str_cmd, sizeof(str_cmd));
 		AnalyzerHelpers::GetNumberString(frame.mData2, display_base, 32, str_arg, sizeof(str_arg));
 
-		str_desc = SDMMCHelpers::MMCCommandDescription(frame.mData1, frame.mData2);
+		str_desc = command_name(mSettings, frame);
+		const char *str_prefix = command_prefix(frame);
 
-		AddResultString("CMD");
-		AddResultString("CMD", str_cmd);
-		AddResultString("CMD", str_cmd, ", arg=", str_arg, "  ", str_desc);
-		AddResultString("CMD", str_cmd, " (", cmd_abbrev_from_number(frame.mData1), "), arg=", str_arg);
+		AddResultString(str_prefix);
+		AddResultString(str_prefix, str_cmd);
+		AddResultString(str_prefix, str_cmd, " ", str_desc);
+		AddResultString(str_prefix, str_cmd, " ", str_desc, ", arg=", str_arg);
 
+		/* argument fields below are eMMC specific */
+		if (mSettings->mProtocol == PROTOCOL_MMC)
 		switch (frame.mData1) {
 		case 3: //SET_RELATIVE_ADDR
 		case 7: //SELECT/DESELECT_CARD
@@ -309,6 +262,7 @@ case FRAMETYPE_COMMAND:
 			sprintf(str_buf, ", arg=%s, stuff=%s, rd_wr1=%s", str_arg, str_stuff, str_rd_wr);
 			break;}
 		}
+		break;
 	}
 
 	case FRAMETYPE_RESPONSE:
@@ -322,6 +276,7 @@ case FRAMETYPE_COMMAND:
 		{
 			const char *str_state = "reserved";
 			std::string str_flags("");
+			bool mmc = mSettings->mProtocol == PROTOCOL_MMC;
 
 			switch ((frame.mData1 >> 9) & 0xf) {
 			case 0: str_state = "Idle"; break;
@@ -383,13 +338,15 @@ case FRAMETYPE_COMMAND:
 					str_flags += " READY_FOR_DATA";
 			if (frame.mData1 & (1 << 7))
 					str_flags += " SWITCH_ERROR";
-			if (frame.mData1 & (1 << 6))
+			if (mmc && frame.mData1 & (1 << 6))
 					str_flags += " EXCEPTION_EVENT";
 			if (frame.mData1 & (1 << 5))
 					str_flags += " APP_CMD";
-			if (frame.mData1 & (1 << 4))
+			if (mmc && frame.mData1 & (1 << 4))
 					str_flags += " RESERVED";
-			if (frame.mData1 & (1 << 3) || frame.mData1 & (1 << 2))
+			if (!mmc && frame.mData1 & (1 << 3))
+					str_flags += " AKE_SEQ_ERROR";
+			if (mmc && (frame.mData1 & (1 << 3) || frame.mData1 & (1 << 2)))
 					str_flags += " APP_SPECIFIC";
 			if (frame.mData1 & (1 << 1) || frame.mData1 & 1)
 					str_flags += " MANUF_TEST";
@@ -403,6 +360,7 @@ case FRAMETYPE_COMMAND:
 		{
 			std::string res("R2");
 			char pname[7], prv_str[4], psn_str[12];
+			bool sd = mSettings->mProtocol == PROTOCOL_SD;
 			char rsp_str[64];
 
 			AddResultString(res.c_str());
@@ -429,16 +387,17 @@ case FRAMETYPE_COMMAND:
 			pname[2] = (frame.mData1 >> 16) & 0xff;
 			pname[3] = (frame.mData1 >>  8) & 0xff;
 			pname[4] = (frame.mData1 >>  0) & 0xff;
-			pname[5] = (frame.mData2 >> 56) & 0xff;
+			pname[5] = sd ? 0 : (frame.mData2 >> 56) & 0xff; /* SD: 5 char PNM */
 			pname[6] = 0;
 
-			unsigned prv = (unsigned)((frame.mData2 >> 48) & 0xff);
+			/* SD: PRV [63:56], PSN [55:24]; eMMC: PRV [55:48], PSN [47:16] */
+			unsigned prv = (unsigned)((frame.mData2 >> (sd ? 56 : 48)) & 0xff);
 			prv_str[0] = '0' + ((prv >> 4) & 0x0f);
 			prv_str[1] = '.';
 			prv_str[2] = '0' + (prv & 0x0f);
 			prv_str[3] = 0;
 
-			unsigned psn = (unsigned)((frame.mData2 >> 16) & 0xfffffffful);
+			unsigned psn = (unsigned)((frame.mData2 >> (sd ? 24 : 16)) & 0xfffffffful);
 			AnalyzerHelpers::GetNumberString(psn, Decimal, 32, psn_str, sizeof(psn_str));
 
 			res += " pnm='";
@@ -481,6 +440,13 @@ case FRAMETYPE_COMMAND:
 			AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, 32, str_32, sizeof(str_32));
 			AddResultString("R3");
 			AddResultString("R3, ocr=", str_32);
+			if (mSettings->mProtocol == PROTOCOL_SD) {
+				/* OCR[31]: power up done, OCR[30]: CCS (SDHC/SDXC) */
+				AddResultString("R3, ocr=", str_32,
+						(frame.mData1 & (1ull << 31)) ? " ready" : " busy",
+						(frame.mData1 & (1ull << 31)) ?
+							((frame.mData1 & (1ull << 30)) ? " SDHC/SDXC" : " SDSC") : "");
+			}
 			break;
 		case MMC_RSP_R4:
 			AddResultString("R4");
@@ -488,6 +454,55 @@ case FRAMETYPE_COMMAND:
 		case MMC_RSP_R5:
 			AddResultString("R5");
 			break;
+		case MMC_RSP_R6:
+		{
+			/* [31:16] new RCA, [15:0] card status bits 23, 22, 19, 12:0 */
+			char str_rca[16];
+			const char *str_state = "reserved";
+			std::string str_flags("");
+
+			switch ((frame.mData1 >> 9) & 0xf) {
+			case 0: str_state = "Idle"; break;
+			case 1: str_state = "Ready"; break;
+			case 2: str_state = "Ident"; break;
+			case 3: str_state = "Stby"; break;
+			case 4: str_state = "Tran"; break;
+			case 5: str_state = "Data"; break;
+			case 6: str_state = "Rcv"; break;
+			case 7: str_state = "Prg"; break;
+			case 8: str_state = "Dis"; break;
+			}
+			if (frame.mData1 & (1 << 15))
+					str_flags += " COM_CRC_ERROR";
+			if (frame.mData1 & (1 << 14))
+					str_flags += " ILLEGAL_COMMAND";
+			if (frame.mData1 & (1 << 13))
+					str_flags += " ERROR";
+			if (frame.mData1 & (1 << 8))
+					str_flags += " READY_FOR_DATA";
+			if (frame.mData1 & (1 << 5))
+					str_flags += " APP_CMD";
+			if (frame.mData1 & (1 << 3))
+					str_flags += " AKE_SEQ_ERROR";
+
+			AnalyzerHelpers::GetNumberString((frame.mData1 >> 16) & 0xffff, Hexadecimal, 16, str_rca, sizeof(str_rca));
+			AddResultString("R6");
+			AddResultString("R6, rca=", str_rca);
+			AddResultString("R6, rca=", str_rca, ", ", str_state, str_flags.c_str());
+			break;
+		}
+		case MMC_RSP_R7:
+		{
+			/* [11:8] voltage accepted, [7:0] check pattern echo */
+			char str_volt[16];
+			char str_check[16];
+			AnalyzerHelpers::GetNumberString((frame.mData1 >> 8) & 0xf, Hexadecimal, 4, str_volt, sizeof(str_volt));
+			AnalyzerHelpers::GetNumberString(frame.mData1 & 0xff, Hexadecimal, 8, str_check, sizeof(str_check));
+			AddResultString("R7");
+			AddResultString("R7, check=", str_check);
+			AddResultString("R7, voltage=", str_volt, ", check=", str_check);
+			break;
+		}
 		}
 		break;
 	}
@@ -605,7 +620,7 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 			AnalyzerHelpers::GetNumberString(frame.mData1, Decimal, 6, str_cmd, sizeof(str_cmd));
 			AnalyzerHelpers::GetNumberString(frame.mData2, display_base, 32, str_arg, sizeof(str_arg));
 
-			file_stream << "CMD" << str_cmd << "(" << cmd_abbrev_from_number(frame.mData1) << "), arg=" << str_arg << " ";
+			file_stream << command_prefix(frame) << str_cmd << "(" << command_name(mSettings, frame) << "), arg=" << str_arg << " ";
 			break;
 		}
 
@@ -691,6 +706,7 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 			{
 				std::string res("R2");
 				char pname[7], prv_str[4], psn_str[12];
+				bool sd = mSettings->mProtocol == PROTOCOL_SD;
 				char rsp_str[64];
 
 				res += " [CID]";
@@ -712,16 +728,17 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 				pname[2] = (frame.mData1 >> 16) & 0xff;
 				pname[3] = (frame.mData1 >>  8) & 0xff;
 				pname[4] = (frame.mData1 >>  0) & 0xff;
-				pname[5] = (frame.mData2 >> 56) & 0xff;
+				pname[5] = sd ? 0 : (frame.mData2 >> 56) & 0xff; /* SD: 5 char PNM */
 				pname[6] = 0;
 
-				unsigned prv = (unsigned)((frame.mData2 >> 48) & 0xff);
+				/* SD: PRV [63:56], PSN [55:24]; eMMC: PRV [55:48], PSN [47:16] */
+				unsigned prv = (unsigned)((frame.mData2 >> (sd ? 56 : 48)) & 0xff);
 				prv_str[0] = '0' + ((prv >> 4) & 0x0f);
 				prv_str[1] = '.';
 				prv_str[2] = '0' + (prv & 0x0f);
 				prv_str[3] = 0;
 
-				unsigned psn = (unsigned)((frame.mData2 >> 16) & 0xfffffffful);
+				unsigned psn = (unsigned)((frame.mData2 >> (sd ? 24 : 16)) & 0xfffffffful);
 				AnalyzerHelpers::GetNumberString(psn, Decimal, 32, psn_str, sizeof(psn_str));
 
 				res += " pnm='";
@@ -767,6 +784,14 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 			case MMC_RSP_R5:
 				file_stream << "R5 ";
 				break;
+			case MMC_RSP_R6:
+				AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, 32, str_32, sizeof(str_32));
+				file_stream << "R6, rsp=" << str_32 << " ";
+				break;
+			case MMC_RSP_R7:
+				AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, 32, str_32, sizeof(str_32));
+				file_stream << "R7, rsp=" << str_32 << " ";
+				break;
 			}
 			break;
 		}
@@ -807,6 +832,8 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 				case MMC_RSP_R1:
 				case MMC_RSP_R4:
 				case MMC_RSP_R5:
+				case MMC_RSP_R6:
+				case MMC_RSP_R7:
 					data[0] = (U8)(lastCmd);
 					data[1] = dFrame.mData1 >> 24;
 					data[2] = dFrame.mData1 >> 16;
@@ -933,8 +960,8 @@ void SDMMCAnalyzerResults::GenerateFrameTabularText(U64 frame_index, DisplayBase
 	const char *str_desc;
 	AnalyzerHelpers::GetNumberString(frame.mData1, Decimal, 6, str_cmd, sizeof(str_cmd));
 	AnalyzerHelpers::GetNumberString(frame.mData2, display_base, 32, str_arg, sizeof(str_arg));
-	str_desc = SDMMCHelpers::MMCCommandDescription(frame.mData1, frame.mData2);
-	AddTabularText("CMD", str_cmd, ", arg=", str_arg, " ", str_desc);
+	str_desc = command_name(mSettings, frame);
+	AddTabularText(command_prefix(frame), str_cmd, " ", str_desc, ", arg=", str_arg);
 }
 
 void SDMMCAnalyzerResults::GeneratePacketTabularText(U64 packet_id, DisplayBase display_base)

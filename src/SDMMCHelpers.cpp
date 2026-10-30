@@ -25,8 +25,8 @@ static struct MMCResponse responses[64] = {
 	/* 21 */ {MMC_RSP_NONE,     0,   0, false, false, false}, /* reserved */
 	/* 22 */ {MMC_RSP_NONE,     0,   0, false, false, false}, /* reserved */
 	/* 23 */ {MMC_RSP_R1,      32,  64, false, false, false},
-	/* 24 */ {MMC_RSP_R1,      32,  64, false, true, false},
-	/* 25 */ {MMC_RSP_R1,      32,  64, false, true, true},
+	/* 24 */ {MMC_RSP_R1,      32,  64, false, true, false, 0, true},
+	/* 25 */ {MMC_RSP_R1,      32,  64, false, true, true, 0, true},
 	/* 26 */ {MMC_RSP_R1,      32,  64, false, false, false},
 	/* 27 */ {MMC_RSP_R1,      32,  64, false, false, false},
 	/* 28 */ {MMC_RSP_R1,      32,  64, true, false, false},
@@ -170,6 +170,157 @@ const char * SDMMCHelpers::MMCCommandDescription(unsigned int index, unsigned in
 	}
 
 	return commands[index].desc;
+}
+
+/* According to SD Physical Layer Simplified Specification (SD mode) */
+static struct MMCResponse sd_response(enum MMCResponseType type,
+		bool busy = false, unsigned int block_bytes = 0,
+		bool several = false, bool write = false)
+{
+	/* NCR (command to response) is at most 64 clocks in SD mode */
+	struct MMCResponse response = {
+		type,
+		(type == MMC_RSP_R2_CID || type == MMC_RSP_R2_CSD) ? 128u : 32u,
+		64, busy, block_bytes != 0, several, block_bytes, write
+	};
+	return response;
+}
+
+struct MMCResponse SDMMCHelpers::SDCommandResponse(unsigned int index, bool app)
+{
+	/* application specific commands (after CMD55); data blocks of the
+	 * security commands are not decoded */
+	if (app) {
+		switch (index) {
+			case 6:  return sd_response(MMC_RSP_R1);            /* SET_BUS_WIDTH */
+			case 13: return sd_response(MMC_RSP_R1, false, 64); /* SD_STATUS */
+			case 18: case 25: case 26: case 38:
+			case 43: case 44: case 45: case 46: case 47: case 48: case 49:
+				return sd_response(MMC_RSP_R1);                  /* security */
+			case 22: return sd_response(MMC_RSP_R1, false, 4);  /* SEND_NUM_WR_BLOCKS */
+			case 23: return sd_response(MMC_RSP_R1);            /* SET_WR_BLK_ERASE_COUNT */
+			case 41: return sd_response(MMC_RSP_R3);            /* SD_SEND_OP_COND */
+			case 42: return sd_response(MMC_RSP_R1);            /* SET_CLR_CARD_DETECT */
+			case 51: return sd_response(MMC_RSP_R1, false, 8);  /* SEND_SCR */
+			default: break; /* not an ACMD: decoded as a regular command */
+		}
+	}
+
+	switch (index) {
+		case 0:  return sd_response(MMC_RSP_NONE);   /* GO_IDLE_STATE */
+		case 2:  return sd_response(MMC_RSP_R2_CID); /* ALL_SEND_CID */
+		case 3:  return sd_response(MMC_RSP_R6);     /* SEND_RELATIVE_ADDR */
+		case 4:  return sd_response(MMC_RSP_NONE);   /* SET_DSR */
+		case 5:  return sd_response(MMC_RSP_R4);     /* IO_SEND_OP_COND (SDIO only) */
+		case 6:  return sd_response(MMC_RSP_R1, false, 64); /* SWITCH_FUNC */
+		case 7:  return sd_response(MMC_RSP_R1, true);      /* SELECT/DESELECT_CARD */
+		case 8:  return sd_response(MMC_RSP_R7);     /* SEND_IF_COND */
+		case 9:  return sd_response(MMC_RSP_R2_CSD); /* SEND_CSD */
+		case 10: return sd_response(MMC_RSP_R2_CID); /* SEND_CID */
+		case 11: return sd_response(MMC_RSP_R1);     /* VOLTAGE_SWITCH */
+		case 12: return sd_response(MMC_RSP_R1, true); /* STOP_TRANSMISSION */
+		case 13: return sd_response(MMC_RSP_R1);     /* SEND_STATUS */
+		case 15: return sd_response(MMC_RSP_NONE);   /* GO_INACTIVE_STATE */
+		case 16: return sd_response(MMC_RSP_R1);     /* SET_BLOCKLEN */
+		case 17: return sd_response(MMC_RSP_R1, false, DATA_BLOCK_BYTES);       /* READ_SINGLE_BLOCK */
+		case 18: return sd_response(MMC_RSP_R1, false, DATA_BLOCK_BYTES, true); /* READ_MULTIPLE_BLOCK */
+		case 19: return sd_response(MMC_RSP_R1, false, 64); /* SEND_TUNING_BLOCK (4 bit only) */
+		case 20: return sd_response(MMC_RSP_R1, true);      /* SPEED_CLASS_CONTROL */
+		case 22: return sd_response(MMC_RSP_R1);     /* ADDRESS_EXTENSION */
+		case 23: return sd_response(MMC_RSP_R1);     /* SET_BLOCK_COUNT */
+		case 24: return sd_response(MMC_RSP_R1, false, DATA_BLOCK_BYTES, false, true); /* WRITE_BLOCK */
+		case 25: return sd_response(MMC_RSP_R1, false, DATA_BLOCK_BYTES, true, true);  /* WRITE_MULTIPLE_BLOCK */
+		case 27: return sd_response(MMC_RSP_R1, false, 16, false, true); /* PROGRAM_CSD */
+		case 28: return sd_response(MMC_RSP_R1, true); /* SET_WRITE_PROT */
+		case 29: return sd_response(MMC_RSP_R1, true); /* CLR_WRITE_PROT */
+		case 30: return sd_response(MMC_RSP_R1, false, 4); /* SEND_WRITE_PROT */
+		case 32: return sd_response(MMC_RSP_R1);     /* ERASE_WR_BLK_START */
+		case 33: return sd_response(MMC_RSP_R1);     /* ERASE_WR_BLK_END */
+		case 38: return sd_response(MMC_RSP_R1, true); /* ERASE */
+		/* data blocks of the following commands are not decoded (length or
+		 * direction depend on the argument or on previous commands) */
+		case 42: return sd_response(MMC_RSP_R1);     /* LOCK_UNLOCK */
+		case 43: return sd_response(MMC_RSP_R1, true); /* Q_MANAGEMENT */
+		case 44: case 45: case 46: case 47:
+			return sd_response(MMC_RSP_R1);          /* command queue */
+		case 48: return sd_response(MMC_RSP_R1, false, DATA_BLOCK_BYTES);        /* READ_EXTR_SINGLE */
+		case 49: return sd_response(MMC_RSP_R1, false, DATA_BLOCK_BYTES, false, true); /* WRITE_EXTR_SINGLE */
+		case 52: return sd_response(MMC_RSP_R5);     /* IO_RW_DIRECT (SDIO only) */
+		case 53: return sd_response(MMC_RSP_R5);     /* IO_RW_EXTENDED (SDIO only) */
+		case 55: return sd_response(MMC_RSP_R1);     /* APP_CMD */
+		case 56: return sd_response(MMC_RSP_R1);     /* GEN_CMD */
+		case 58: case 59:
+			return sd_response(MMC_RSP_R1);          /* READ/WRITE_EXTR_MULTI */
+		default: return sd_response(MMC_RSP_NONE);   /* reserved */
+	}
+}
+
+const char * SDMMCHelpers::SDCommandName(unsigned int index, bool app)
+{
+	if (app) {
+		switch (index) {
+			case 6:  return "SET_BUS_WIDTH";
+			case 13: return "SD_STATUS";
+			case 18: case 25: case 26: case 38:
+			case 43: case 44: case 45: case 46: case 47: case 48: case 49:
+				return "[security]";
+			case 22: return "SEND_NUM_WR_BLOCKS";
+			case 23: return "SET_WR_BLK_ERASE_COUNT";
+			case 41: return "SD_SEND_OP_COND";
+			case 42: return "SET_CLR_CARD_DETECT";
+			case 51: return "SEND_SCR";
+			default: break;
+		}
+	}
+
+	switch (index) {
+		case 0:  return "GO_IDLE_STATE";
+		case 2:  return "ALL_SEND_CID";
+		case 3:  return "SEND_RELATIVE_ADDR";
+		case 4:  return "SET_DSR";
+		case 5:  return "IO_SEND_OP_COND";
+		case 6:  return "SWITCH_FUNC";
+		case 7:  return "SELECT/DESELECT_CARD";
+		case 8:  return "SEND_IF_COND";
+		case 9:  return "SEND_CSD";
+		case 10: return "SEND_CID";
+		case 11: return "VOLTAGE_SWITCH";
+		case 12: return "STOP_TRANSMISSION";
+		case 13: return "SEND_STATUS";
+		case 15: return "GO_INACTIVE_STATE";
+		case 16: return "SET_BLOCKLEN";
+		case 17: return "READ_SINGLE_BLOCK";
+		case 18: return "READ_MULTIPLE_BLOCK";
+		case 19: return "SEND_TUNING_BLOCK";
+		case 20: return "SPEED_CLASS_CONTROL";
+		case 22: return "ADDRESS_EXTENSION";
+		case 23: return "SET_BLOCK_COUNT";
+		case 24: return "WRITE_BLOCK";
+		case 25: return "WRITE_MULTIPLE_BLOCK";
+		case 27: return "PROGRAM_CSD";
+		case 28: return "SET_WRITE_PROT";
+		case 29: return "CLR_WRITE_PROT";
+		case 30: return "SEND_WRITE_PROT";
+		case 32: return "ERASE_WR_BLK_START";
+		case 33: return "ERASE_WR_BLK_END";
+		case 38: return "ERASE";
+		case 40: return "[defined by DPS]";
+		case 42: return "LOCK_UNLOCK";
+		case 43: return "Q_MANAGEMENT";
+		case 44: return "Q_TASK_INFO_A";
+		case 45: return "Q_TASK_INFO_B";
+		case 46: return "Q_RD_TASK";
+		case 47: return "Q_WR_TASK";
+		case 48: return "READ_EXTR_SINGLE";
+		case 49: return "WRITE_EXTR_SINGLE";
+		case 52: return "IO_RW_DIRECT";
+		case 53: return "IO_RW_EXTENDED";
+		case 55: return "APP_CMD";
+		case 56: return "GEN_CMD";
+		case 58: return "READ_EXTR_MULTI";
+		case 59: return "WRITE_EXTR_MULTI";
+		default: return "[reserved]";
+	}
 }
 
 /*

@@ -31,6 +31,9 @@ public:
 		FRAMETYPE_DATA_BLOCK,  // first 8 bytes in mData1, block length in mData2
 	};
 
+	// FRAMETYPE_COMMAND mFlags (0x40/0x80 are reserved by the SDK)
+	enum { FLAG_APP_CMD = 0x01 };
+
 protected:
 	void AppendDataBytes(std::string &str, U64 data, U32 count, DisplayBase display_base);
 

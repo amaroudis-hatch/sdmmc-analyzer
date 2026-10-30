@@ -3,8 +3,8 @@
 
 #include <Analyzer.h>
 
-/* FIXME: block length is fixed to 512 bytes (CMD16/SD register reads
- * with other sizes are not taken into account) */
+/* default data block length (SDHC/SDXC always use 512 byte blocks; CMD16
+ * SET_BLOCKLEN is not taken into account) */
 #define DATA_BLOCK_BYTES 512
 
 enum MMCResponseType {
@@ -15,6 +15,8 @@ enum MMCResponseType {
 	MMC_RSP_R3,
 	MMC_RSP_R4,
 	MMC_RSP_R5,
+	MMC_RSP_R6, // SD: published RCA
+	MMC_RSP_R7, // SD: card interface condition
 };
 
 enum CommandReadPhase {
@@ -62,15 +64,21 @@ struct CommandReadState {
 	U8 resp_ignore_cnt;
 	U8 resp_data_cnt;
 	U8 resp_crc_cnt;
+	bool isAppCmd; // command follows CMD55 (SD ACMD)
+	bool rearmed;  // waiting for a command while data is still being read
 };
 
-struct DataReadState { // FIXME: take "block len" into account
+struct DataReadState {
 	enum DataReadPhase phase;
 	int cmdindex;
 	U16 data_cnt;
 	U8 crc_cnt;
 	U8 checkcrc_cnt;
 	bool hasSeveralDataBlocks;
+	U16 blockBytes; // data block length in bytes
+	bool isWrite;   // host -> card: CRC status and busy follow each block
+	U8 busy_cnt;    // clocks waited for busy to start after CRC status
+	bool busy_seen;
 };
 
 struct MMCResponse
@@ -81,6 +89,8 @@ struct MMCResponse
 	bool mBusy;
 	bool hasDataBlock;
 	bool hasSeveralDataBlocks;
+	unsigned int mBlockBytes; // 0: DATA_BLOCK_BYTES
+	bool mWrite;              // data block sent by the host
 };
 
 struct MMCCommand
@@ -96,6 +106,8 @@ public:
 	static U8 crc7(const U8 *data, unsigned int size);
 	static struct MMCResponse MMCCommandResponse(unsigned int index);
 	static const char * MMCCommandDescription(unsigned int index, unsigned int args);
+	static struct MMCResponse SDCommandResponse(unsigned int index, bool app);
+	static const char * SDCommandName(unsigned int index, bool app);
 
 private:
 	static U8 __crc7(U8 crc, U8 data);
