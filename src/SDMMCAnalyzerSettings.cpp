@@ -14,7 +14,8 @@ SDMMCAnalyzerSettings::SDMMCAnalyzerSettings()
 	mDataChannel7(UNDEFINED_CHANNEL),
 	mProtocol(PROTOCOL_MMC),
 	mBusWidth(BUS_WIDTH_0),
-	mSampleEdge(SAMPLE_EDGE_RISING)
+	mSampleEdge(SAMPLE_EDGE_RISING),
+	mDataMode(DATA_MODE_PACKED)
 {
 	mClockChannelInterface.reset(new AnalyzerSettingInterfaceChannel());
 	mClockChannelInterface->SetTitleAndTooltip("Clock", "Clock (CLK)");
@@ -80,11 +81,21 @@ SDMMCAnalyzerSettings::SDMMCAnalyzerSettings()
 	mSampleEdgeInterface->AddNumber(SAMPLE_EDGE_FALLING, "Falling", "Sample on falling edge");
 	mSampleEdgeInterface->SetNumber(mSampleEdge);
 
+	mDataModeInterface.reset(new AnalyzerSettingInterfaceNumberList());
+	mDataModeInterface->SetTitleAndTooltip("Data bytes",
+			"How data block contents are shown. Fewer frames use much less memory on long captures.");
+	mDataModeInterface->AddNumber(DATA_MODE_BYTE,   "Every byte", "One frame per data byte (uses a lot of memory)");
+	mDataModeInterface->AddNumber(DATA_MODE_PACKED, "16 bytes per frame", "One frame per 16 data bytes");
+	mDataModeInterface->AddNumber(DATA_MODE_BLOCK,  "One frame per block", "One frame per data block, first 8 bytes shown");
+	mDataModeInterface->AddNumber(DATA_MODE_NONE,   "Hidden", "No data frames, only start/stop markers and CRC");
+	mDataModeInterface->SetNumber(mDataMode);
+
 	AddInterface(mClockChannelInterface.get());
 	AddInterface(mCommandChannelInterface.get());
 	AddInterface(mProtocolInterface.get());
 	AddInterface(mBusWidthInterface.get());
 	AddInterface(mSampleEdgeInterface.get());
+	AddInterface(mDataModeInterface.get());
 	AddInterface(mDataChannelInterface0.get());
 	AddInterface(mDataChannelInterface1.get());
 	AddInterface(mDataChannelInterface2.get());
@@ -145,6 +156,7 @@ bool SDMMCAnalyzerSettings::SetSettingsFromInterfaces()
 	mProtocol = SDMMCProtocol((U32)mProtocolInterface->GetNumber());
 	mBusWidth = SDMMCBusWidth((U32)mBusWidthInterface->GetNumber());
 	mSampleEdge = SDMMCSampleEdge((U32)mSampleEdgeInterface->GetNumber());
+	mDataMode = SDMMCDataMode((U32)mDataModeInterface->GetNumber());
 
 	if (mBusWidth == BUS_WIDTH_1 && mDataChannel0 == UNDEFINED_CHANNEL) {
 		SetErrorText("Please select a channel for D0 or set bus width to 0.");
@@ -201,6 +213,7 @@ void SDMMCAnalyzerSettings::UpdateInterfacesFromSettings()
 	mProtocolInterface->SetNumber(mProtocol);
 	mBusWidthInterface->SetNumber(mBusWidth);
 	mSampleEdgeInterface->SetNumber(mSampleEdge);
+	mDataModeInterface->SetNumber(mDataMode);
 }
 
 void SDMMCAnalyzerSettings::LoadSettings(const char *settings)
@@ -223,6 +236,9 @@ void SDMMCAnalyzerSettings::LoadSettings(const char *settings)
 	archive >> tmp; mProtocol = SDMMCProtocol(tmp);
 	archive >> tmp; mBusWidth = SDMMCBusWidth(tmp);
 	archive >> tmp; mSampleEdge = SDMMCSampleEdge(tmp);
+	// added later: keep the default when loading older settings
+	if (archive >> tmp)
+		mDataMode = SDMMCDataMode(tmp);
 
 	ClearChannels();
 	AddChannel(mClockChannel, "Clock", true);
@@ -256,6 +272,7 @@ const char *SDMMCAnalyzerSettings::SaveSettings()
 	archive << mProtocol;
 	archive << mBusWidth;
 	archive << mSampleEdge;
+	archive << mDataMode;
 
 	return SetReturnString(archive.GetString());
 }

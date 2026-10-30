@@ -2,6 +2,7 @@
 #define __SDMMC_ANALYZER_RESULTS
 
 #include <AnalyzerResults.h>
+#include <string>
 
 class SDMMCAnalyzer;
 class SDMMCAnalyzerSettings;
@@ -26,7 +27,12 @@ public:
 		FRAMETYPE_DATA_CONTENTS,
 		FRAMETYPE_DATA_CRC,
 		FRAMETYPE_DATA_CRC_CHECK,
+		FRAMETYPE_DATA_PACKED, // up to 16 bytes in mData1/mData2, count in mFlags
+		FRAMETYPE_DATA_BLOCK,  // first 8 bytes in mData1, block length in mData2
 	};
+
+protected:
+	void AppendDataBytes(std::string &str, U64 data, U32 count, DisplayBase display_base);
 
 protected:
 	SDMMCAnalyzerSettings *mSettings;

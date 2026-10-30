@@ -235,7 +235,7 @@ case FRAMETYPE_COMMAND:
 				AnalyzerHelpers::GetNumberString(forced, display_base, 4, str_forced, sizeof(str_forced));
 				AnalyzerHelpers::GetNumberString(num_blocks, display_base, 4, str_num_blocks, sizeof(str_num_blocks));
 
-				sprintf(str_buf, ", arg=%s, rwritereq=%s, tagreq=%s, ctx_id=%s, forced=%s, num_blocks=%s", str_arg, str_rwritereq, str_tagreq, str_ctx_id, str_forced, num_blocks);
+				sprintf(str_buf, ", arg=%s, rwritereq=%s, tagreq=%s, ctx_id=%s, forced=%s, num_blocks=%s", str_arg, str_rwritereq, str_tagreq, str_ctx_id, str_forced, str_num_blocks);
 			}
 			break;}
 		case 38: //ERASE
@@ -516,15 +516,49 @@ case FRAMETYPE_COMMAND:
 		AddResultString(str_crc);
 		break;
 	}
+	case FRAMETYPE_DATA_PACKED:
+	{
+		if (channel != mSettings->mDataChannel0)
+			break;
+
+		U32 count = frame.mFlags;
+		std::string res;
+		AppendDataBytes(res, frame.mData1, count > 8 ? 8 : count, display_base);
+		if (count > 8)
+			AppendDataBytes(res, frame.mData2, count - 8, display_base);
+
+		AddResultString("D");
+		AddResultString("DATA");
+		AddResultString(res.c_str());
+		break;
+	}
+	case FRAMETYPE_DATA_BLOCK:
+	{
+		if (channel != mSettings->mDataChannel0)
+			break;
+
+		char str_len[16];
+		std::string res;
+		AnalyzerHelpers::GetNumberString(frame.mData2, Decimal, 32, str_len, sizeof(str_len));
+		AppendDataBytes(res, frame.mData1, 8, display_base);
+
+		AddResultString("BLOCK");
+		AddResultString("BLOCK ", str_len, " B");
+		AddResultString("BLOCK ", str_len, " B: ", res.c_str(), " ...");
+		break;
+	}
 	case FRAMETYPE_DATA_CRC:
 	{
 		if (channel != mSettings->mDataChannel0)
 			break;
 
-		char str_crc[8];
-		AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, 8,
+		// one CRC16 per data line, D0 in the low 16 bits
+		int crc_bits = mSettings->mBusWidth == BUS_WIDTH_1 ? 16 : 64;
+		char str_crc[24];
+		AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, crc_bits,
 				str_crc, sizeof(str_crc));
-		AddResultString(str_crc);
+		AddResultString("CRC");
+		AddResultString("CRC=", str_crc);
 		break;
 	}
 
@@ -815,6 +849,28 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 			file_stream << "DATA_BYTE, " << str_byte << std::endl;
 			break;
 		}
+		case FRAMETYPE_DATA_PACKED:
+		{
+			// same output as one frame per byte
+			char str_byte[5];
+			for (U32 b = 0; b < frame.mFlags; b++) {
+				U64 data = b < 8 ? frame.mData1 : frame.mData2;
+				U32 n = b < 8 ? (frame.mFlags > 8 ? 8 : frame.mFlags) : frame.mFlags - 8;
+				U32 k = b < 8 ? b : b - 8;
+				AnalyzerHelpers::GetNumberString((data >> (8 * (n - 1 - k))) & 0xFF,
+						Hexadecimal, 8, str_byte, sizeof(str_byte));
+				file_stream << "DATA_BYTE, " << str_byte << std::endl;
+			}
+			break;
+		}
+		case FRAMETYPE_DATA_BLOCK:
+		{
+			std::string res;
+			AppendDataBytes(res, frame.mData1, 8, Hexadecimal);
+			file_stream << "DATA_BLOCK, " << frame.mData2 << " bytes, first 8: "
+				<< res.c_str() << std::endl;
+			break;
+		}
 		case FRAMETYPE_DATA_CRC:
 		{
 			break;
@@ -851,6 +907,19 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 		}
 	}
 	file_stream.close();
+}
+
+void SDMMCAnalyzerResults::AppendDataBytes(std::string &str, U64 data, U32 count, DisplayBase display_base)
+{
+	/* data holds count bytes, first byte in the most significant position */
+	char str_byte[16];
+	for (U32 k = 0; k < count; k++) {
+		AnalyzerHelpers::GetNumberString((data >> (8 * (count - 1 - k))) & 0xFF,
+				display_base, 8, str_byte, sizeof(str_byte));
+		if (!str.empty())
+			str += " ";
+		str += str_byte;
+	}
 }
 
 void SDMMCAnalyzerResults::GenerateFrameTabularText(U64 frame_index, DisplayBase display_base)

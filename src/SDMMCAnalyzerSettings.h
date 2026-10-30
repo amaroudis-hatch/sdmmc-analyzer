@@ -21,6 +21,15 @@ enum SDMMCSampleEdge {
 	SAMPLE_EDGE_FALLING
 };
 
+// how data block contents are turned into frames - fewer frames use much
+// less memory in Logic on long captures
+enum SDMMCDataMode {
+	DATA_MODE_BYTE,     // one frame per byte
+	DATA_MODE_PACKED,   // one frame per 16 bytes
+	DATA_MODE_BLOCK,    // one frame per block (first 8 bytes shown)
+	DATA_MODE_NONE      // no data frames (markers and CRC only)
+};
+
 class SDMMCAnalyzerSettings : public AnalyzerSettings
 {
 public:
@@ -46,6 +55,7 @@ public:
 	enum SDMMCProtocol mProtocol;
 	enum SDMMCBusWidth mBusWidth;
 	enum SDMMCSampleEdge mSampleEdge;
+	enum SDMMCDataMode mDataMode;
 
 protected:
 	std::auto_ptr<AnalyzerSettingInterfaceChannel> mClockChannelInterface;
@@ -61,6 +71,7 @@ protected:
 	std::auto_ptr<AnalyzerSettingInterfaceNumberList> mProtocolInterface;
 	std::auto_ptr<AnalyzerSettingInterfaceNumberList> mBusWidthInterface;
 	std::auto_ptr<AnalyzerSettingInterfaceNumberList> mSampleEdgeInterface;
+	std::auto_ptr<AnalyzerSettingInterfaceNumberList> mDataModeInterface;
 };
 
 #endif
