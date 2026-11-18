@@ -372,3 +372,13 @@ U8 SDMMCHelpers::crc7(const U8 *data, unsigned int size)
 	}
 	return crc7_accum;
 }
+
+/* data block CRC16 (CCITT, x^16 + x^12 + x^5 + 1), fed one bit at a time */
+U16 SDMMCHelpers::crc16_bit(U16 crc, unsigned int bit)
+{
+	unsigned int feedback = ((crc >> 15) & 1) ^ (bit & 1);
+	crc = (U16)(crc << 1);
+	if (feedback)
+		crc ^= 0x1021;
+	return crc;
+}

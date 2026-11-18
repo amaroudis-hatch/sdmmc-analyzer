@@ -412,14 +412,20 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 				} else {
 					mResults->AddMarker(mClock->GetSampleNumber(),
 							AnalyzerResults::Start, mSettings.mDataChannel0);
+					for (int lane = 0; lane < 8; lane++)
+						state->calc_crc[lane] = 0;
 					state->phase = DATA_DATA;
 				}
 			}
 			return;
 		case DATA_DATA:
 		{
+			const U32 lines = BusWidthLines();
+			const U64 bits = DataLinesBits();
+			for (U32 lane = 0; lane < lines; lane++)
+				state->calc_crc[lane] = SDMMCHelpers::crc16_bit(
+						state->calc_crc[lane], (unsigned int)(bits >> lane));
 			if (mSettings.mDataMode != DATA_MODE_NONE) {
-				const U32 lines = BusWidthLines();
 				const U32 clocks_per_byte = 8 / lines;
 				const U32 bytes_per_frame = DataBytesPerFrame(state);
 				const U32 clocks_per_frame = clocks_per_byte * bytes_per_frame;
@@ -452,7 +458,7 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 				else if (mSettings.mDataMode == DATA_MODE_PACKED)
 					target = &frame->mData2;
 				if (target != NULL)
-					*target = (*target << lines) | DataLinesBits();
+					*target = (*target << lines) | bits;
 				/* Add frame at its last clock */
 				if (frame_clock == clocks_per_frame - 1) {
 					frame->mEndingSampleInclusive = mClock->GetSampleNumber();
@@ -495,6 +501,24 @@ void SDMMCAnalyzer::ReadDataBit(DataReadState *state, struct Frame *frame) {
 				ShiftCrcBit(&frame->mData2, 3, mData7);
 			}
 			if (state->crc_cnt == 15) {
+				/* compare with the CRCs calculated over the block; mData2
+				 * holds D4-D7 on an 8 bit bus, otherwise the calculated
+				 * D0-D3 CRCs (same layout as mData1) */
+				const U32 lines = BusWidthLines();
+				U64 calc = 0;
+				bool crc_ok = true;
+				for (U32 lane = 0; lane < lines; lane++) {
+					const U64 received = ((lane < 4 ? frame->mData1 : frame->mData2)
+							>> (16 * (lane % 4))) & 0xFFFF;
+					if (received != state->calc_crc[lane])
+						crc_ok = false;
+					if (lane < 4)
+						calc |= (U64)state->calc_crc[lane] << (16 * lane);
+				}
+				if (lines < 8)
+					frame->mData2 = calc;
+				if (!crc_ok)
+					frame->mFlags |= DISPLAY_AS_ERROR_FLAG;
 				frame->mEndingSampleInclusive = mClock->GetSampleNumber();
 				QueueFrame(*frame, DATA_LANE);
 				mResults->CommitResults();

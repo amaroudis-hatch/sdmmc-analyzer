@@ -79,6 +79,7 @@ struct DataReadState {
 	bool isWrite;   // host -> card: CRC status and busy follow each block
 	U8 busy_cnt;    // clocks waited for busy to start after CRC status
 	bool busy_seen;
+	U16 calc_crc[8]; // CRC16 calculated over the block, one per data line
 };
 
 struct MMCResponse
@@ -104,6 +105,7 @@ public:
 
 public:
 	static U8 crc7(const U8 *data, unsigned int size);
+	static U16 crc16_bit(U16 crc, unsigned int bit);
 	static struct MMCResponse MMCCommandResponse(unsigned int index);
 	static const char * MMCCommandDescription(unsigned int index, unsigned int args);
 	static struct MMCResponse SDCommandResponse(unsigned int index, bool app);

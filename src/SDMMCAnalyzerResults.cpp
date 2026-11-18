@@ -6,6 +6,7 @@
 #include <AnalyzerHelpers.h>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 
 SDMMCAnalyzerResults::SDMMCAnalyzerResults(SDMMCAnalyzer* analyzer, SDMMCAnalyzerSettings* settings)
 :	mSettings(settings),
@@ -570,10 +571,24 @@ case FRAMETYPE_COMMAND:
 		// one CRC16 per data line, D0 in the low 16 bits
 		int crc_bits = mSettings->mBusWidth == BUS_WIDTH_1 ? 16 : 64;
 		char str_crc[24];
+		char str_calc[24];
 		AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, crc_bits,
 				str_crc, sizeof(str_crc));
-		AddResultString("CRC");
-		AddResultString("CRC=", str_crc);
+		if (!(frame.mFlags & DISPLAY_AS_ERROR_FLAG)) {
+			AddResultString("CRC");
+			AddResultString("CRC=", str_crc);
+			AddResultString("CRC=", str_crc, " OK");
+		} else {
+			AddResultString("CRC!");
+			AddResultString("CRC ERROR");
+			AddResultString("CRC=", str_crc, " ERROR");
+			// calculated CRCs are only kept for buses up to 4 bits
+			if (mSettings->mBusWidth != BUS_WIDTH_8) {
+				AnalyzerHelpers::GetNumberString(frame.mData2, Hexadecimal, crc_bits,
+						str_calc, sizeof(str_calc));
+				AddResultString("CRC=", str_crc, " ERROR, calc=", str_calc);
+			}
+		}
 		break;
 	}
 
@@ -605,6 +620,13 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 	U32 sample_rate = mAnalyzer->GetSampleRate();
 
 	U8 lastCmd = 0;
+	// command or response the next CMD line CRC belongs to; data frames
+	// can come in between (e.g. CMD12 sent during a read)
+	Frame cmdLaneFrame;
+	bool haveCmdLaneFrame = false;
+	// CMD line output is collected here and written once its line is
+	// complete, so data lines don't end up in the middle of it
+	std::ostringstream cmd_line;
 
 	U64 num_frames = GetNumFrames();
 	for  (U32 i = 0; i < num_frames; i++)
@@ -620,13 +642,17 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 			AnalyzerHelpers::GetNumberString(frame.mData1, Decimal, 6, str_cmd, sizeof(str_cmd));
 			AnalyzerHelpers::GetNumberString(frame.mData2, display_base, 32, str_arg, sizeof(str_arg));
 
-			file_stream << command_prefix(frame) << str_cmd << "(" << command_name(mSettings, frame) << "), arg=" << str_arg << " ";
+			cmd_line << command_prefix(frame) << str_cmd << "(" << command_name(mSettings, frame) << "), arg=" << str_arg << " ";
+			cmdLaneFrame = frame;
+			haveCmdLaneFrame = true;
 			break;
 		}
 
 		case FRAMETYPE_RESPONSE:
 		{
 			char str_32[33];
+			cmdLaneFrame = frame;
+			haveCmdLaneFrame = true;
 
 			switch (frame.mFlags) {
 			case MMC_RSP_R1:
@@ -693,12 +719,12 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 				if (frame.mData1 & (1 << 5))
 						str_flags += " APP_CMD";
 
-				file_stream << "R1, " << str_state << ", rsp=" << str_32;
+				cmd_line << "R1, " << str_state << ", rsp=" << str_32;
 
 				if (str_flags.length() > 0)
-					file_stream << str_flags.c_str();
+					cmd_line << str_flags.c_str();
 
-				file_stream << " ";
+				cmd_line << " ";
 
 				break;
 			}
@@ -747,7 +773,7 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 				res += prv_str;
 				res += " psn=";
 				res += psn_str;
-				file_stream << res.c_str() << std::endl;
+				cmd_line << res.c_str() << std::endl;
 
 				break;
 			}
@@ -770,27 +796,27 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 				res += " ";
 				AnalyzerHelpers::GetNumberString(frame.mData2 & 0xffffffffull, display_base, 32, rsp_str, sizeof(rsp_str));
 				res += rsp_str;
-				file_stream << res.c_str() << std::endl;
+				cmd_line << res.c_str() << std::endl;
 
 				break;
 			}
 			case MMC_RSP_R3:
 				AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, 32, str_32, sizeof(str_32));
-				file_stream << "R3, ocr=" << str_32 << std::endl;
+				cmd_line << "R3, ocr=" << str_32 << std::endl;
 				break;
 			case MMC_RSP_R4:
-				file_stream << "R4 ";
+				cmd_line << "R4 ";
 				break;
 			case MMC_RSP_R5:
-				file_stream << "R5 ";
+				cmd_line << "R5 ";
 				break;
 			case MMC_RSP_R6:
 				AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, 32, str_32, sizeof(str_32));
-				file_stream << "R6, rsp=" << str_32 << " ";
+				cmd_line << "R6, rsp=" << str_32 << " ";
 				break;
 			case MMC_RSP_R7:
 				AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, 32, str_32, sizeof(str_32));
-				file_stream << "R7, rsp=" << str_32 << " ";
+				cmd_line << "R7, rsp=" << str_32 << " ";
 				break;
 			}
 			break;
@@ -798,18 +824,18 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 
 		case FRAMETYPE_CRC:
 		{
-			if (i == 0)
+			if (!haveCmdLaneFrame)
 			{
-				file_stream << "CRC Error" << std::endl;
+				cmd_line << "CRC Error" << std::endl;
 				break;
 			}
 
-			Frame dFrame = GetFrame(i-1);
+			const Frame &dFrame = cmdLaneFrame;
 			char str_crc[8];
 			char str_c[128];
 
 			U8 data[6];
-			U8 calcCrc;
+			U8 calcCrc = 0;
 			bool crc = 1;
 
 			switch (dFrame.mType) {
@@ -828,7 +854,7 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 
 			case FRAMETYPE_RESPONSE:
 			{
-				switch (frame.mFlags) {
+				switch (dFrame.mFlags) {
 				case MMC_RSP_R1:
 				case MMC_RSP_R4:
 				case MMC_RSP_R5:
@@ -842,28 +868,29 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 
 					calcCrc = SDMMCHelpers::crc7(data, 5);
 					break;
-				case MMC_RSP_R2_CID:
-				case MMC_RSP_R2_CSD:
-				case MMC_RSP_R3:
+				default:
 					crc = 0;
 					break;
 				}
 
 				break;
 			}
+			default:
+				crc = 0;
+				break;
 			}
 
 			if (!crc) break;
 
 			AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, 8, str_crc, sizeof(str_crc));
 
-			file_stream << "CRC=" << str_crc;
+			cmd_line << "CRC=" << str_crc;
 
 			if (calcCrc != (U8)(frame.mData1)) {
 				AnalyzerHelpers::GetNumberString(calcCrc, Hexadecimal, 8, str_crc, sizeof(str_crc));
-				file_stream << ", ERROR=" << str_crc;
+				cmd_line << ", ERROR=" << str_crc;
 			}
-			file_stream << std::endl;
+			cmd_line << std::endl;
 			break;
 		}
 
@@ -900,30 +927,43 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 		}
 		case FRAMETYPE_DATA_CRC:
 		{
+			// one CRC16 per data line, D0 in the low 16 bits
+			int crc_bits = mSettings->mBusWidth == BUS_WIDTH_1 ? 16 : 64;
+			char str_crc[24];
+			AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, crc_bits,
+					str_crc, sizeof(str_crc));
+			file_stream << "DATA_CRC, " << str_crc;
+			if (!(frame.mFlags & DISPLAY_AS_ERROR_FLAG)) {
+				file_stream << ", OK";
+			} else {
+				file_stream << ", ERROR";
+				// calculated CRCs are only kept for buses up to 4 bits
+				if (mSettings->mBusWidth != BUS_WIDTH_8) {
+					AnalyzerHelpers::GetNumberString(frame.mData2, Hexadecimal, crc_bits,
+							str_crc, sizeof(str_crc));
+					file_stream << ", calc=" << str_crc;
+				}
+			}
+			file_stream << std::endl;
 			break;
-			// XXX does not work correctly
-			char str_crc[20];
-			char str_byte8[20];
-			char str_byte16[20];
-			AnalyzerHelpers::GetNumberString(frame.mData1,
-					Hexadecimal, 8, str_byte8,
-					sizeof(str_byte8));
-			file_stream << "CRC8, " << str_byte8 << std::endl;
-			AnalyzerHelpers::GetNumberString(frame.mData1,
-					Hexadecimal, 16, str_byte16,
-					sizeof(str_byte16));
-			file_stream << "CRC16, " << str_byte16 << std::endl;
-			AnalyzerHelpers::GetNumberString(frame.mData1,
-					Hexadecimal, 64, str_crc,
-					sizeof(str_crc));
-			file_stream << "DATA_CRC, " << str_crc << std::endl;
+		}
+		case FRAMETYPE_DATA_CRC_CHECK:
+		{
+			const char *status = frame.mData1 == 2 ? "OK" :
+				frame.mData1 == 5 ? "ERROR" : "UNEXPECTED";
+			file_stream << "DATA_CRC_STATUS, " << status << std::endl;
 			break;
 		}
 		default:
 			file_stream << "error";
 		}
 
-		//file_stream << ""; //std::endl;
+		// write the CMD line text once its line is complete
+		const std::string pending = cmd_line.str();
+		if (!pending.empty() && pending[pending.size() - 1] == '\n') {
+			file_stream << pending;
+			cmd_line.str("");
+		}
 
 
 		// check for cancel flag
@@ -933,6 +973,7 @@ void SDMMCAnalyzerResults::GenerateExportFile(const char* file, DisplayBase disp
 			return;
 		}
 	}
+	file_stream << cmd_line.str();
 	file_stream.close();
 }
 
@@ -953,6 +994,23 @@ void SDMMCAnalyzerResults::GenerateFrameTabularText(U64 frame_index, DisplayBase
 {
 	ClearTabularText();
 	Frame frame = GetFrame(frame_index);
+	if (frame.mType == FRAMETYPE_DATA_CRC) {
+		int crc_bits = mSettings->mBusWidth == BUS_WIDTH_1 ? 16 : 64;
+		char str_crc[24];
+		char str_calc[24];
+		AnalyzerHelpers::GetNumberString(frame.mData1, Hexadecimal, crc_bits,
+				str_crc, sizeof(str_crc));
+		if (!(frame.mFlags & DISPLAY_AS_ERROR_FLAG)) {
+			AddTabularText("DATA CRC=", str_crc, " OK");
+		} else if (mSettings->mBusWidth != BUS_WIDTH_8) {
+			AnalyzerHelpers::GetNumberString(frame.mData2, Hexadecimal, crc_bits,
+					str_calc, sizeof(str_calc));
+			AddTabularText("DATA CRC=", str_crc, " ERROR, calc=", str_calc);
+		} else {
+			AddTabularText("DATA CRC=", str_crc, " ERROR");
+		}
+		return;
+	}
 	if (frame.mType != FRAMETYPE_COMMAND)
 		return;
 	char str_cmd[33];
