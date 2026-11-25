@@ -133,26 +133,34 @@ void SDMMCAnalyzer::AdvanceToNextClock()
 		mClock->AdvanceToNextEdge();
 	} while (mClock->GetBitState() != search);
 
-	// Sample CMD/DAT one sample before the clock edge: in high speed mode
-	// outputs change only a few ns after the edge, so sampling exactly at the
-	// edge sample can pick up the next bit. Setup time guarantees the lines
-	// are stable just before the edge in all modes.
-	U64 sample = mClock->GetSampleNumber() - 1;
-	mCommand->AdvanceToAbsPosition(sample);
+	// Sample CMD/DAT at the configured offset from the clock edge (default
+	// one sample before it): in high speed mode outputs change only a few ns
+	// after the edge, so sampling exactly at the edge sample can pick up the
+	// next bit. Some hosts/probe points need a later point instead (lines
+	// still changing just before the edge at the probe).
+	S64 sample = (S64)mClock->GetSampleNumber() + mSettings.mSampleOffset;
+	SampleLine(mCommand, sample);
 	if (mSettings.mBusWidth != BUS_WIDTH_0)
-		mData0->AdvanceToAbsPosition(sample);
+		SampleLine(mData0, sample);
 	if (mSettings.mBusWidth == BUS_WIDTH_4 ||
 			mSettings.mBusWidth == BUS_WIDTH_8) {
-		mData1->AdvanceToAbsPosition(sample);
-		mData2->AdvanceToAbsPosition(sample);
-		mData3->AdvanceToAbsPosition(sample);
+		SampleLine(mData1, sample);
+		SampleLine(mData2, sample);
+		SampleLine(mData3, sample);
 	}
 	if (mSettings.mBusWidth == BUS_WIDTH_8) {
-		mData4->AdvanceToAbsPosition(sample);
-		mData5->AdvanceToAbsPosition(sample);
-		mData6->AdvanceToAbsPosition(sample);
-		mData7->AdvanceToAbsPosition(sample);
+		SampleLine(mData4, sample);
+		SampleLine(mData5, sample);
+		SampleLine(mData6, sample);
+		SampleLine(mData7, sample);
 	}
+}
+
+// channels can only move forward: a sample point before the current position
+// (negative offset right after AdvanceToNextCommand) keeps the current one
+void SDMMCAnalyzer::SampleLine(AnalyzerChannelData *line, S64 sample) {
+	if (sample > (S64)line->GetSampleNumber())
+		line->AdvanceToAbsPosition((U64)sample);
 }
 
 void SDMMCAnalyzer::AdvanceToNextCommand() {

@@ -56,6 +56,8 @@ public:
 	enum SDMMCBusWidth mBusWidth;
 	enum SDMMCSampleEdge mSampleEdge;
 	enum SDMMCDataMode mDataMode;
+	// where CMD/DAT are sampled, in samples relative to the clock edge
+	S32 mSampleOffset;
 
 protected:
 	std::auto_ptr<AnalyzerSettingInterfaceChannel> mClockChannelInterface;
@@ -72,6 +74,7 @@ protected:
 	std::auto_ptr<AnalyzerSettingInterfaceNumberList> mBusWidthInterface;
 	std::auto_ptr<AnalyzerSettingInterfaceNumberList> mSampleEdgeInterface;
 	std::auto_ptr<AnalyzerSettingInterfaceNumberList> mDataModeInterface;
+	std::auto_ptr<AnalyzerSettingInterfaceInteger> mSampleOffsetInterface;
 };
 
 #endif

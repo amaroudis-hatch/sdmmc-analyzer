@@ -40,6 +40,7 @@ protected:
 	void FlushFrames();
 	U64 DataLinesBits();
 	void ShiftCrcBit(U64 *crcs, int lane, AnalyzerChannelData *line);
+	void SampleLine(AnalyzerChannelData *line, S64 sample);
 
 protected:
 	SDMMCAnalyzerSettings mSettings;

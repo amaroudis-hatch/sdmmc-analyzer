@@ -15,7 +15,8 @@ SDMMCAnalyzerSettings::SDMMCAnalyzerSettings()
 	mProtocol(PROTOCOL_MMC),
 	mBusWidth(BUS_WIDTH_0),
 	mSampleEdge(SAMPLE_EDGE_RISING),
-	mDataMode(DATA_MODE_PACKED)
+	mDataMode(DATA_MODE_PACKED),
+	mSampleOffset(-1)
 {
 	mClockChannelInterface.reset(new AnalyzerSettingInterfaceChannel());
 	mClockChannelInterface->SetTitleAndTooltip("Clock", "Clock (CLK)");
@@ -90,12 +91,23 @@ SDMMCAnalyzerSettings::SDMMCAnalyzerSettings()
 	mDataModeInterface->AddNumber(DATA_MODE_NONE,   "Hidden", "No data frames, only start/stop markers and CRC");
 	mDataModeInterface->SetNumber(mDataMode);
 
+	mSampleOffsetInterface.reset(new AnalyzerSettingInterfaceInteger());
+	mSampleOffsetInterface->SetTitleAndTooltip("Sample offset (samples)",
+			"Where CMD and data lines are sampled, in samples from the clock edge "
+			"(negative: before the edge). -1 suits most hosts. If CRC errors show "
+			"up on every line at once, the lines change close to the edge at the "
+			"probe: try 0 or +1.");
+	mSampleOffsetInterface->SetMin(-16);
+	mSampleOffsetInterface->SetMax(16);
+	mSampleOffsetInterface->SetInteger(mSampleOffset);
+
 	AddInterface(mClockChannelInterface.get());
 	AddInterface(mCommandChannelInterface.get());
 	AddInterface(mProtocolInterface.get());
 	AddInterface(mBusWidthInterface.get());
 	AddInterface(mSampleEdgeInterface.get());
 	AddInterface(mDataModeInterface.get());
+	AddInterface(mSampleOffsetInterface.get());
 	AddInterface(mDataChannelInterface0.get());
 	AddInterface(mDataChannelInterface1.get());
 	AddInterface(mDataChannelInterface2.get());
@@ -157,6 +169,7 @@ bool SDMMCAnalyzerSettings::SetSettingsFromInterfaces()
 	mBusWidth = SDMMCBusWidth((U32)mBusWidthInterface->GetNumber());
 	mSampleEdge = SDMMCSampleEdge((U32)mSampleEdgeInterface->GetNumber());
 	mDataMode = SDMMCDataMode((U32)mDataModeInterface->GetNumber());
+	mSampleOffset = mSampleOffsetInterface->GetInteger();
 
 	if (mBusWidth == BUS_WIDTH_1 && mDataChannel0 == UNDEFINED_CHANNEL) {
 		SetErrorText("Please select a channel for D0 or set bus width to 0.");
@@ -214,6 +227,7 @@ void SDMMCAnalyzerSettings::UpdateInterfacesFromSettings()
 	mBusWidthInterface->SetNumber(mBusWidth);
 	mSampleEdgeInterface->SetNumber(mSampleEdge);
 	mDataModeInterface->SetNumber(mDataMode);
+	mSampleOffsetInterface->SetInteger(mSampleOffset);
 }
 
 void SDMMCAnalyzerSettings::LoadSettings(const char *settings)
@@ -239,6 +253,9 @@ void SDMMCAnalyzerSettings::LoadSettings(const char *settings)
 	// added later: keep the default when loading older settings
 	if (archive >> tmp)
 		mDataMode = SDMMCDataMode(tmp);
+	S32 offset;
+	if (archive >> offset)
+		mSampleOffset = offset;
 
 	ClearChannels();
 	AddChannel(mClockChannel, "Clock", true);
@@ -273,6 +290,7 @@ const char *SDMMCAnalyzerSettings::SaveSettings()
 	archive << mBusWidth;
 	archive << mSampleEdge;
 	archive << mDataMode;
+	archive << mSampleOffset;
 
 	return SetReturnString(archive.GetString());
 }
